@@ -113,3 +113,63 @@ class Discriminator(nn.Module):
         y = self.rnn(h)                  # [B, T, H]
         logits = self.out(y).squeeze(-1) # [B, T]
         return logits
+
+
+def build_modules(cfg: TimeGANConfig):
+    embedder = Embedder(cfg.x_dim, cfg.h_dim, cfg.rnn_layers, cfg.dropout)
+    recovery = Recovery(cfg.h_dim, cfg.x_dim, cfg.rnn_layers, cfg.dropout)
+    generator = Generator(cfg.z_dim, cfg.h_dim, cfg.rnn_layers, cfg.dropout)
+    supervisor = Supervisor(cfg.h_dim, cfg.rnn_layers, cfg.dropout)
+    discriminator = Discriminator(cfg.h_dim)
+    return embedder, recovery, generator, supervisor, discriminator
+
+
+class TimeGAN(nn.Module):
+    """Wrapper that groups the TimeGAN components.
+
+    Exposes a small, inference-friendly API:
+    - encode(x) : real → latent
+    - reconstruct(x) : autoencoder path
+    - generate(B, T) : noise → synthetic sequence 
+    """
+    def __init__(self, cfg: TimeGANConfig):
+        super().__init__()
+        self.cfg = cfg
+        (self.embedder,
+         self.recovery,
+         self.generator,
+         self.supervisor,
+         self.discriminator) = build_modules(cfg)
+
+    @torch.no_grad()
+    def sample_noise(self, batch: int, seq_len: int) -> torch.Tensor:
+        return torch.randn(batch, seq_len, self.cfg.z_dim, device=next(self.parameters()).device)
+
+    @torch.no_grad()
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        return self.embedder(x)
+
+    @torch.no_grad()
+    def reconstruct(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.embedder(x)
+        return self.recovery(h)
+
+    @torch.no_grad()
+    def generate(self, batch: int, seq_len: int) -> torch.Tensor:
+        z = self.sample_noise(batch, seq_len)
+        h_tilde = self.generator(z)
+        h_hat = self.supervisor(h_tilde)
+        x_hat = self.recovery(h_hat)
+        return x_hat
+ 
+__all__ = [
+    "TimeGANConfig",
+    "LSTMBlock",
+    "Embedder",
+    "Recovery",
+    "Generator",
+    "Supervisor",
+    "Discriminator",
+    "build_modules",
+    "TimeGAN",
+]
