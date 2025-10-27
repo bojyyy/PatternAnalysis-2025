@@ -1,5 +1,5 @@
 """
-dataset.py 
+dataset.py
 Headerless LOBSTER to windowed Dataset for TimeGAN (fixed-length, tabular).
 - Reads messages and orderbook CSVs
 - Engineers compact, stationary features:
@@ -44,7 +44,7 @@ def _onehot(types: np.ndarray, classes=TYPE_CLASSES) -> np.ndarray:
     return np.eye(len(classes), dtype=np.float32)[idx]
 
 
-def preprocess(msgs: pd.DataFrame, ob: pd.DataFrame) -> Tuple[Tensor, Dict[str,int]]:
+def preprocess(msgs: pd.DataFrame, ob: pd.DataFrame) -> Tuple[Tensor, Dict[str, int]]:
     assert len(msgs) == len(ob), "messages and orderbook must align"
 
     # Δt (ms) → log1p
@@ -52,13 +52,13 @@ def preprocess(msgs: pd.DataFrame, ob: pd.DataFrame) -> Tuple[Tensor, Dict[str,i
     dt = np.diff(t_ms, prepend=t_ms[0])
     log_dt = np.log1p(np.maximum(dt, 0.0)).astype(np.float32)
 
-    # side {0,1} from direction −1/+1
+    # side {0,1} from direction -1/+1
     side = ((msgs["Direction"].to_numpy(np.int32) + 1)//2).astype(np.float32)
 
-    # size → log1p
+    # size to log1p
     log_size = np.log1p(msgs["Size"].to_numpy(np.float64)).astype(np.float32)
 
-    # top-of-book mid / spread → ticks
+    # top-of-book mid / spread to ticks
     ask1 = ob["AskPrice1"].to_numpy(np.float64)
     bid1 = ob["BidPrice1"].to_numpy(np.float64)
     mid = 0.5*(ask1 + bid1)
@@ -75,7 +75,7 @@ def preprocess(msgs: pd.DataFrame, ob: pd.DataFrame) -> Tuple[Tensor, Dict[str,i
     X = np.column_stack([type_oh, side, mid_delta_ticks, spread_ticks, log_size, log_dt]).astype(np.float32)
 
     # feature index map
-    idx: Dict[str,int] = {f"type_{c}": i for i,c in enumerate(TYPE_CLASSES)}
+    idx: Dict[str, int] = {f"type_{c}": i for i,c in enumerate(TYPE_CLASSES)}
     k = len(TYPE_CLASSES)
     idx.update({
         "side": k,
@@ -100,10 +100,12 @@ class ContinuousMinMax:
         self.min_ = sub.min(dim=0).values
         self.max_ = sub.max(dim=0).values
         return self
+    
     def transform(self, X: Tensor) -> Tensor:
         X = X.clone()
         X[:, self.idx] = (X[:, self.idx] - self.min_) / (self.max_ + self.eps)
         return X
+    
     def inverse_transform(self, X: Tensor) -> Tensor:
         X = X.clone()
         X[:, self.idx] = X[:, self.idx]*(self.max_ + self.eps) + self.min_
@@ -111,7 +113,7 @@ class ContinuousMinMax:
 
 
 class LOBWindowDataset(Dataset):
-    """Headerless LOBSTER CSVs → windowed tensors [N,F].
+    """Headerless LOBSTER CSVs to windowed tensors [N,F].
     Provide row ranges for train/val/test splits.
     """
     def __init__(self,
@@ -151,7 +153,7 @@ class LOBWindowDataset(Dataset):
         return self.X[s:e]
 
 
-def _row_splits(n_rows: int, train_frac=0.7, val_frac=0.15) -> Tuple[int,int]:
+def _row_splits(n_rows: int, train_frac=0.7, val_frac=0.15) -> Tuple[int, int]:
     train_end = int(n_rows*train_frac)
     val_end = int(n_rows*(train_frac+val_frac))
     return train_end, val_end
