@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from typing import Tuple
+import json, numpy as np, matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -72,6 +73,34 @@ class TimeGANLoss:
     def e_rec_loss(self, x, x_tilde):
         # reconstruction root-MSE
         return self.mse(x, x_tilde)
+
+def js_divergence(p_samples: np.ndarray, q_samples: np.ndarray, nbins: int = 80) -> float:
+    """Symmetrized KL on simple histograms (supports different sample sizes)."""
+    # same range for both
+    lo = np.nanmin([p_samples.min(), q_samples.min()])
+    hi = np.nanmax([p_samples.max(), q_samples.max()])
+    if lo == hi:  # degenerate
+        return 0.0
+    p_hist, edges = np.histogram(p_samples, bins=nbins, range=(lo, hi), density=True)
+    q_hist, _     = np.histogram(q_samples, bins=nbins, range=(lo, hi), density=True)
+    # smooth to avoid log 0
+    eps = 1e-8
+    p = (p_hist + eps); p /= p.sum()
+    q = (q_hist + eps); q /= q.sum()
+    m = 0.5*(p+q)
+    kl = lambda a,b: np.sum(a*np.log(a/b))
+    return 0.5*kl(p,m) + 0.5*kl(q,m)
+
+def inverse_scale_continuous(x: torch.Tensor, scaler, feat_idx: dict, cont_keys):
+    """Inverse only the continuous dims back to original (engineered) units."""
+    x_np = x.reshape(-1, x.shape[-1]).clone()
+    if hasattr(scaler, "inverse_transform"):
+        x_np = scaler.inverse_transform(x_np)
+    return x_np.reshape(x.shape)
+
+def extract_cols(x: torch.Tensor, feat_idx: dict, keys):
+    idxs = [feat_idx[k] for k in keys]
+    return x[..., idxs]
 
 
 # Train
@@ -151,7 +180,7 @@ def train(args):
 
     # Joint training
     for it in range(args.iters_joint):
-        # G/S (twice per D step as in ref)
+        # G/S (twice per D step as in reference implementation)
         for _ in range(2):
             for X in train_loader:
                 X = X.to(device)
