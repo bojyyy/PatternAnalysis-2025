@@ -3,7 +3,7 @@ predict.py
 
 Evaluate a trained TimeGAN run by using the
 saved synthetic windows from train.py (synth.pt). Computes:
-  - JS divergence between real vs synthetic distributions of mid_return & spread
+  - KL divergence between real vs synthetic distributions of mid_return & spread
   - SSIM between heatmaps (time x depth-level sizes) for a few representative windows
 Also saves side-by-side heatmap images.
 
@@ -26,19 +26,19 @@ from dataset import build_loaders, CONT_KEYS, extract_depth_matrix
 from skimage.metrics import structural_similarity as skimage_ssim
 
 
-def js_divergence(p: np.ndarray, q: np.ndarray, nbins: int = 80) -> float:
-    lo = float(min(np.min(p), np.min(q)))
-    hi = float(max(np.max(p), np.max(q)))
+def kl_divergence(p_samples: np.ndarray, q_samples: np.ndarray, nbins: int = 80, eps: float = 1e-8) -> float:
+    """KL(real || synth) on histograms that share a support window."""
+    lo = float(min(np.min(p_samples), np.min(q_samples)))
+    hi = float(max(np.max(p_samples), np.max(q_samples)))
     if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
         return 0.0
-    P, _ = np.histogram(p, bins=nbins, range=(lo, hi), density=True)
-    Q, _ = np.histogram(q, bins=nbins, range=(lo, hi), density=True)
-    eps = 1e-8
-    P = (P + eps); P /= P.sum()
-    Q = (Q + eps); Q /= Q.sum()
-    M = 0.5 * (P + Q)
-    KL = lambda A, B: np.sum(A * np.log(A / B))
-    return 0.5 * KL(P, M) + 0.5 * KL(Q, M)
+    p_hist, _ = np.histogram(p_samples, bins=nbins, range=(lo, hi), density=True)
+    q_hist, _ = np.histogram(q_samples, bins=nbins, range=(lo, hi), density=True)
+    p = p_hist + eps
+    q = q_hist + eps
+    p /= p.sum()
+    q /= q.sum()
+    return float(np.sum(p * np.log(p / q)))
 
 
 def ssim2d(imgA: np.ndarray, imgB: np.ndarray) -> float:
@@ -102,7 +102,7 @@ def main(args):
         synth_ptr += B
         Xhat_inv = scaler.inverse_transform(synth_chunk.reshape(-1, synth_chunk.shape[-1])).reshape(synth_chunk.shape)
 
-        # JS features (flatten)
+        # KL features (flatten)
         r_mid = X_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
         r_spr = X_inv[..., feat_idx["spread_ticks"]].numpy().ravel()
         s_mid = Xhat_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
@@ -117,11 +117,11 @@ def main(args):
             Simg = extract_depth_matrix(Xhat_inv[0], feat_idx, K=args.depth_levels).numpy()
             heatmap_pairs.append((minmax01(Rimg), minmax01(Simg)))
 
-    # Concatenate and compute JS
+    # Concatenate and compute KL
     real_mid = np.concatenate(real_mid); real_spread = np.concatenate(real_spread)
     synth_mid = np.concatenate(synth_mid); synth_spread = np.concatenate(synth_spread)
-    js_mid = js_divergence(real_mid, synth_mid)
-    js_spread = js_divergence(real_spread, synth_spread)
+    kl_mid = kl_divergence(real_mid, synth_mid)
+    kl_spread = kl_divergence(real_spread, synth_spread)
 
     # Heatmap SSIMs + figures
     os.makedirs(args.out_dir, exist_ok=True)
@@ -137,15 +137,15 @@ def main(args):
 
     # Dump metrics JSON
     report = {
-        'JS_mid_return': float(js_mid),
-        'JS_spread': float(js_spread),
+        'KL_mid_return': float(kl_mid),
+        'KL_spread': float(kl_spread),
         'SSIM_depth': [float(s) for s in ssim_scores],
-        'notes': 'JS on inverse-scaled engineered features; heatmaps use log1p depth sizes normalized to [0,1].'
+        'notes': 'KL on inverse-scaled engineered features; heatmaps use log1p depth sizes normalized to [0,1].'
     }
     with open(os.path.join(args.out_dir, 'predict_metrics.json'), 'w') as f:
         json.dump(report, f, indent=2)
 
-    print(f"JS(mid)={js_mid:.3f}  JS(spread)={js_spread:.3f}")
+    print(f"KL(mid)={kl_mid:.3f}  JS(spread)={kl_spread:.3f}")
     if ssim_scores:
         print("SSIM depth:", ", ".join(f"{s:.3f}" for s in ssim_scores))
         print(f"Saved {len(ssim_scores)} heatmaps to {args.out_dir}")

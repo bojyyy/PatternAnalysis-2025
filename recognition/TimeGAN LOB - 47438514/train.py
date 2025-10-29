@@ -104,21 +104,20 @@ class TimeGANLoss:
         return self.mse(x, x_tilde)
 
 
-# Simple validation metrics (JS on engineered features)
-def js_divergence(p_samples: np.ndarray, q_samples: np.ndarray, nbins: int = 80) -> float:
-    """Symmetrized KL on histograms (common range)."""
+# Simple validation metrics (KL on engineered features)
+def kl_divergence(p_samples: np.ndarray, q_samples: np.ndarray, nbins: int = 80, eps: float = 1e-8) -> float:
+    """KL(real || synth) on histograms that share a support window."""
     lo = float(min(np.min(p_samples), np.min(q_samples)))
     hi = float(max(np.max(p_samples), np.max(q_samples)))
     if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
         return 0.0
-    p_hist, edges = np.histogram(p_samples, bins=nbins, range=(lo, hi), density=True)
+    p_hist, _ = np.histogram(p_samples, bins=nbins, range=(lo, hi), density=True)
     q_hist, _ = np.histogram(q_samples, bins=nbins, range=(lo, hi), density=True)
-    eps = 1e-8
-    p = (p_hist + eps); p /= p.sum()
-    q = (q_hist + eps); q /= q.sum()
-    m = 0.5 * (p + q)
-    kl = lambda a, b: np.sum(a * np.log(a / b))
-    return 0.5 * kl(p, m) + 0.5 * kl(q, m)
+    p = p_hist + eps
+    q = q_hist + eps
+    p /= p.sum()
+    q /= q.sum()
+    return float(np.sum(p * np.log(p / q)))
 
 
 def inverse_scale_continuous(x: torch.Tensor, scaler, feat_idx: dict, cont_keys):
@@ -234,7 +233,7 @@ def train(args):
 
     # history holders for plots/metrics
     his_d, his_gadv, his_gsup, his_gmom, his_rec = [], [], [], [], []
-    his_js_mid, his_js_spread, his_steps = [], [], []
+    his_kl_mid, his_kl_spread, his_steps = [], [], []
 
     steps = {"pretrain_embed": 0, "pretrain_supervised": 0, "joint_GS": 0, "joint_D": 0}
 
@@ -329,11 +328,12 @@ def train(args):
 
             # lightweight validation on val split every val_every
             if (it + 1) % args.val_every == 0:
-                js_mid, js_spread = run_validation(val_loader, model, scaler, feat_idx, device, z_dim)
-                his_js_mid.append(js_mid); his_js_spread.append(js_spread)
+                kl_mid, kl = run_validation(val_loader, model, scaler, feat_idx, device, z_dim)
+                E.train(); R.train(); G.train(); S.train(); D.train()
+                his_kl_mid.append(kl_mid); his_kl_spread.append(kl_spread)
                 print(f"[Joint] it={it+1}/{args.iters_joint} d={his_d[-1]:.3f} g_adv={his_gadv[-1]:.3f} "
                       f"g_sup={gs_rmse:.3f} g_mom={his_gmom[-1]:.3f} rec={rec_rmse:.3f} | "
-                      f"JS(mid)={js_mid:.3f} JS(spread)={js_spread:.3f}")
+                      f"KLmid)={kl_mid:.3f} KL(spread)={kl_spread:.3f}")
             else:
                 print(f"[Joint] it={it+1}/{args.iters_joint} d={his_d[-1]:.3f} g_adv={his_gadv[-1]:.3f} "
                       f"g_sup={gs_rmse:.3f} g_mom={his_gmom[-1]:.3f} rec={rec_rmse:.3f}")
@@ -387,9 +387,8 @@ def train(args):
         print(f"Plotting failed: {e}")
 
     val_report = {
-        "JS_mid_delta": his_js_mid[-1] if his_js_mid else None,
-        "JS_spread": his_js_spread[-1] if his_js_spread else None,
-        "notes": "JS is symmetrized KL on histograms of inverse-scaled engineered features.",
+        "kl_mid_delta": his_kl_mid[-1] if his_kl_mid else None,
+        "kl_spread": his_kl_spread[-1] if his_kl_spread else None
     }
     with open("val_metrics.json", "w") as f:
         json.dump(val_report, f, indent=2)
@@ -423,9 +422,9 @@ def run_validation(val_loader, model: TimeGAN, scaler, feat_idx, device, z_dim: 
     real_mid = np.concatenate(real_mid); real_spread = np.concatenate(real_spread)
     synth_mid = np.concatenate(synth_mid); synth_spread = np.concatenate(synth_spread)
 
-    js_mid = js_divergence(real_mid, synth_mid)
-    js_spread = js_divergence(real_spread, synth_spread)
-    return js_mid, js_spread
+    kl_mid = kl_divergence(real_mid, synth_mid)
+    kl_spread = kl_divergence(real_spread, synth_spread)
+    return kl_mid, kl_spread
 
 
 # Argparse
@@ -440,9 +439,9 @@ def parse_args():
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--layers", type=int, default=2)
     p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--iters_pre_embed", type=int, default=5)
-    p.add_argument("--iters_pre_sup", type=int, default=5)
-    p.add_argument("--iters_joint", type=int, default=10)
+    p.add_argument("--iters_pre_embed", type=int, default=500)
+    p.add_argument("--iters_pre_sup", type=int, default=500)
+    p.add_argument("--iters_joint", type=int, default=5000)
     p.add_argument("--gamma", type=float, default=1.0)
     p.add_argument("--sup_w", type=float, default=100.0)
     p.add_argument("--mom_w", type=float, default=100.0)
