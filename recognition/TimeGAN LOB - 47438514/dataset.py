@@ -122,12 +122,12 @@ class ContinuousMinMax:
 
     def transform(self, X: Tensor) -> Tensor:
         X = X.clone()
-        X[:, self.idx] = (X[:, self.idx] - self.min_) / (self.max_ + self.eps)
+        X[:, self.idx] = (X[:, self.idx] - self.min_) / (self.max_ - self.min_ + self.eps)
         return X
 
     def inverse_transform(self, X: Tensor) -> Tensor:
         X = X.clone()
-        X[:, self.idx] = X[:, self.idx] * (self.max_ + self.eps) + self.min_
+        X[:, self.idx] = X[:, self.idx] * (self.max_ - self.min_ + self.eps) + self.min_
         return X
 
 
