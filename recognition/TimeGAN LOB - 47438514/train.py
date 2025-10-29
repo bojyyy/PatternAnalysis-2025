@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from typing import Tuple
-import json
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -22,6 +21,9 @@ import torch.optim as optim
 
 from dataset import build_loaders, CONT_KEYS
 from modules import TimeGAN, TimeGANConfig
+
+import os, time, json, sys, platform
+from collections import defaultdict
 
 
 # Utils
@@ -35,6 +37,29 @@ def moments_mean_std(x, dims=(0, 1), eps: float = 1e-6):
     v = x.var(dim=dims, unbiased=False, keepdim=False)
     return m, torch.sqrt(v + eps)
 
+def count_params(m):
+    trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in m.parameters())
+    return {"trainable": int(trainable), "total": int(total)}
+
+def gpu_env():
+    info = {
+        "torch_version": torch.__version__,
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "cuda_available": torch.cuda.is_available(),
+        "cudnn_enabled": torch.backends.cudnn.enabled,
+        "device_type": "cuda" if torch.cuda.is_available() else "cpu",
+    }
+    if torch.cuda.is_available():
+        idx = torch.cuda.current_device()
+        info.update({
+            "gpu_index": idx,
+            "gpu_name": torch.cuda.get_device_name(idx),
+            "cuda_runtime": torch.version.cuda,
+            "capability": ".".join(map(str, torch.cuda.get_device_capability(idx))),
+        })
+    return info
 
 # TimeGAN losses
 @dataclass
@@ -156,14 +181,63 @@ def train(args):
     opt_GS = optim.Adam(g_params, lr=args.lr)
     opt_D = optim.Adam(d_params, lr=args.lr)
 
+    # run log scaffold
+    run = {}
+    run["config"] = {
+        "x_dim": cfg.x_dim, "z_dim": cfg.z_dim, "h_dim": cfg.h_dim,
+        "rnn_layers": cfg.rnn_layers, "dropout": cfg.dropout,
+        "lr": args.lr, "batch_size": args.batch_size,
+        "seq_len": args.seq_len, "step": args.step,
+        "depth": args.depth, "depth_levels": getattr(args, "depth_levels", None),
+    }
+    run["environment"] = gpu_env()
+
+    # parameter counts
+    run["params"] = {
+        "embedder": count_params(E),
+        "recovery": count_params(R),
+        "generator": count_params(G),
+        "supervisor": count_params(S),
+        "discriminator": count_params(D),
+    }
+    run["params"]["total_trainable"] = sum(v["trainable"] for v in run["params"].values())
+    run["params"]["total"] = sum(v["total"] for v in run["params"].values())
+
+    # save a human-readable architecture dump
+    arch_txt = []
+    arch_txt += ["=== Embedder ===", str(E), "", "=== Recovery ===", str(R), "",
+                "=== Generator ===", str(G), "", "=== Supervisor ===", str(S), "",
+                "=== Discriminator ===", str(D), ""]
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    with open(os.path.splitext(args.out)[0] + "_architecture.txt", "w") as f:
+        f.write("\n".join(arch_txt))
+
+    # training strategy
+    run["strategy"] = {
+        "pretrain_embed_iters": args.iters_pre_embed,
+        "pretrain_supervised_iters": args.iters_pre_sup,
+        "joint_iters": args.iters_joint,
+        "loss_weights": {"gamma": args.gamma, "sup_w": args.sup_w, "mom_w": args.mom_w},
+        "variant_notes": "Full TimeGAN: reconstruction + supervised + adversarial (with moment matching).",
+    }
+
+    # timers and VRAM tracking
+    phase_times = defaultdict(float)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
     # history holders for plots/metrics
     his_d, his_gadv, his_gsup, his_gmom, his_rec = [], [], [], [], []
     his_js_mid, his_js_spread, his_steps = [], [], []
 
+    steps = {"pretrain_embed": 0, "pretrain_supervised": 0, "joint_GS": 0, "joint_D": 0}
+
     # Embedding pretrain
+    t0 = time.time()
     E.train(); R.train()
     for it in range(args.iters_pre_embed):
         for X in train_loader:
+            steps["pretrain_embed"] += 1
             X = X.to(device)
             H = E(X)
             X_tilde = R(H)
@@ -171,11 +245,14 @@ def train(args):
             opt_E0.zero_grad(); rec.backward(); opt_E0.step()
         if (it + 1) % args.log_every == 0:
             print(f"[E-pre] it={it+1}/{args.iters_pre_embed} rec={rec.sqrt().item():.4f}")
+    phase_times["pretrain_embed"] += time.time() - t0
 
     # Supervised pretrain
+    t0 = time.time()
     G.train(); S.train(); E.eval()  # H computed by frozen E here
     for it in range(args.iters_pre_sup):
         for X in train_loader:
+            steps["pretrain_supervised"] += 1
             X = X.to(device)
             with torch.no_grad():
                 H = E(X)
@@ -184,12 +261,15 @@ def train(args):
             opt_GS.zero_grad(); sup.backward(); opt_GS.step()
         if (it + 1) % args.log_every == 0:
             print(f"[S-pre] it={it+1}/{args.iters_pre_sup} sup={sup.sqrt().item():.4f}")
+    phase_times["pretrain_supervised"] += time.time() - t0
 
     # Joint training
+    t0 = time.time()
     for it in range(args.iters_joint):
         # Generator/Supervisor updates (twice per D step)
         for _ in range(2):
             for X in train_loader:
+                steps["joint_GS"] += 1
                 X = X.to(device)
                 B, N, F = X.shape
                 Z = torch.randn(B, N, z_dim, device=device)
@@ -223,6 +303,7 @@ def train(args):
 
         # Discriminator step (gated as in TF ref)
         for X in train_loader:
+            steps["joint_D"] += 1
             X = X.to(device)
             B, N, F = X.shape
             Z = torch.randn(B, N, z_dim, device=device)
@@ -249,6 +330,21 @@ def train(args):
             else:
                 print(f"[Joint] it={it+1}/{args.iters_joint} d={his_d[-1]:.3f} g_adv={his_gadv[-1]:.3f} "
                       f"g_sup={gs_rmse:.3f} g_mom={his_gmom[-1]:.3f} rec={rec_rmse:.3f}")
+    phase_times["joint"] += time.time() - t0
+
+    run["phase_times_sec"] = dict(phase_times)
+    run["total_time_sec"] = time.time() - t0_all
+    run["num_batches"] = {k: int(v) for k, v in steps.items()}
+    run["batches_per_iter"] = len(train_loader)
+
+    if torch.cuda.is_available():
+        run["environment"]["peak_allocated_bytes"] = int(torch.cuda.max_memory_allocated())
+        run["environment"]["peak_reserved_bytes"] = int(torch.cuda.max_memory_reserved())
+
+    # final dump
+    with open(os.path.splitext(args.out)[0] + "_training_report.json", "w") as f:
+        json.dump(run, f, indent=2)
+    print(f"Saved training report to {os.path.splitext(args.out)[0]}_training_report.json")
 
     # Synthesis
     E.eval(); R.eval(); G.eval(); S.eval()

@@ -5,7 +5,7 @@ Evaluate a trained TimeGAN run by using the
 saved synthetic windows from train.py (synth.pt). Computes:
   - JS divergence between real vs synthetic distributions of mid_return & spread
   - SSIM between heatmaps (time x depth-level sizes) for a few representative windows
-Also saves side-by-side heatmap images for the report.
+Also saves side-by-side heatmap images.
 
 Usage example:
     python predict.py \
@@ -23,11 +23,7 @@ import torch
 
 from dataset import build_loaders, CONT_KEYS, extract_depth_matrix
 
-# Optional SSIM from skimage; fall back to a simple luminance+contrast proxy if missing
-try:
-    from skimage.metrics import structural_similarity as skimage_ssim
-except Exception:
-    skimage_ssim = None
+from skimage.metrics import structural_similarity as skimage_ssim
 
 
 def js_divergence(p: np.ndarray, q: np.ndarray, nbins: int = 80) -> float:
@@ -87,7 +83,7 @@ def main(args):
         print("[warn] feat_idx from synth file differs from dataset; using synth mapping for indexing.")
         feat_idx = feat_idx_synth
 
-    # --- evaluation accumulators---
+    # evaluation accumulators
     real_mid, real_spread, synth_mid, synth_spread = [], [], [], []
     heatmap_pairs: list[tuple[np.ndarray, np.ndarray]] = []
 
@@ -114,7 +110,7 @@ def main(args):
         real_mid.append(r_mid); real_spread.append(r_spr)
         synth_mid.append(s_mid); synth_spread.append(s_spr)
 
-        # optional heatmaps (first element of selected global windows)
+        # heatmaps (first element of selected global windows)
         base_idx = synth_ptr - B
         if args.depth_levels > 0 and base_idx in heat_idxs:
             Rimg = extract_depth_matrix(X_inv[0], feat_idx, K=args.depth_levels).numpy()
