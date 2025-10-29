@@ -192,16 +192,21 @@ def train(args):
     }
     run["environment"] = gpu_env()
 
-    # parameter counts
-    run["params"] = {
+    module_params = {
         "embedder": count_params(E),
         "recovery": count_params(R),
         "generator": count_params(G),
         "supervisor": count_params(S),
         "discriminator": count_params(D),
     }
-    run["params"]["total_trainable"] = sum(v["trainable"] for v in run["params"].values())
-    run["params"]["total"] = sum(v["total"] for v in run["params"].values())
+    total_trainable = sum(v["trainable"] for v in module_params.values())
+    total = sum(v["total"] for v in module_params.values())
+
+    run["params"] = dict(module_params)  # copy to keep the module stats clean
+    run["params"]["total_trainable"] = total_trainable
+    run["params"]["total"] = total
+
+
 
     # save a human-readable architecture dump
     arch_txt = []
@@ -223,6 +228,7 @@ def train(args):
 
     # timers and VRAM tracking
     phase_times = defaultdict(float)
+    t0_all = time.time()
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
