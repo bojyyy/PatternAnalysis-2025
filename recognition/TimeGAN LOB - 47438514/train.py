@@ -271,6 +271,7 @@ def train(args):
 
     # Joint training
     t0 = time.time()
+    E.train(); R.train(); G.train(); S.train(); D.train()
     for it in range(args.iters_joint):
         # Generator/Supervisor updates (twice per D step)
         for _ in range(2):
@@ -447,7 +448,7 @@ def parse_args():
     p.add_argument("--mom_w", type=float, default=100.0)
     p.add_argument("--log_every", type=int, default=1)
     p.add_argument("--val_every", type=int, default=200, help="validate every N logged steps")
-    p.add_argument("--depth_levels", type=int, default=0, help="append [BidSize1..K, AskSize1..K] as features")
+    p.add_argument("--depth_levels", type=int, default=10, help="append [BidSize1..K, AskSize1..K] as features")
     p.add_argument("--out", type=str, default="synth.pt")
     p.add_argument("--cpu", action="store_true")
     return p.parse_args()
