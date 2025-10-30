@@ -44,12 +44,7 @@ def kl_divergence(p_samples, q_samples, nbins=40, eps=1e-12, smooth=True):
     q_hist, _     = np.histogram(q, bins=nbins, range=(lo, hi), density=False)
 
     if smooth and nbins >= 3:
-        # All-positive kernels
-        # Option A: simple moving average
         k = np.array([1.0, 1.0, 1.0], dtype=np.float64) / 3.0
-        # Option B (a bit sharper): triangular [1,2,1]/4
-        # k = np.array([1.0, 2.0, 1.0], dtype=np.float64) / 4.0
-
         p_hist = np.convolve(p_hist.astype(np.float64), k, mode="same")
         q_hist = np.convolve(q_hist.astype(np.float64), k, mode="same")
 
@@ -69,7 +64,30 @@ def kl_divergence(p_samples, q_samples, nbins=40, eps=1e-12, smooth=True):
     # Compute KL
     return float(np.sum(p[mask] * (np.log(p[mask]) - np.log(q[mask]))))
 
+def kl_discrete_ticks(real, synth, min_tick=1, max_tick=10, eps=1e-8):
+    """
+    KL(P || Q) where P,Q are PMFs over integer tick classes [min_tick..max_tick].
+    Clips outliers into the end bins and adds eps smoothing for stability.
+    """
+    r = np.asarray(real).ravel()
+    s = np.asarray(synth).ravel()
+    r = r[np.isfinite(r)]
+    s = s[np.isfinite(s)]
+    if r.size == 0 or s.size == 0:
+        return 0.0
 
+    # round to nearest tick and clip to the support
+    r = np.clip(np.rint(r).astype(int), min_tick, max_tick) - min_tick
+    s = np.clip(np.rint(s).astype(int), min_tick, max_tick) - min_tick
+    K = max_tick - min_tick + 1
+
+    p = np.bincount(r, minlength=K).astype(np.float64)
+    q = np.bincount(s, minlength=K).astype(np.float64)
+
+    p = (p + eps) / (p.sum() + eps * K)
+    q = (q + eps) / (q.sum() + eps * K)
+
+    return float(np.sum(p * (np.log(p) - np.log(q))))
 
 def ssim2d(imgA: np.ndarray, imgB: np.ndarray) -> float:
     """Return SSIM in [0,1]. Accepts 2D arrays scaled to [0,1]."""
@@ -113,7 +131,7 @@ def main(args):
         print("[warn] feat_idx from synth file differs from dataset; using synth mapping for indexing.")
         feat_idx = feat_idx_synth
 
-    # --- Build aligned real & synth test tensors (same ordering) ---
+    # Build aligned real & synth test tensors (same ordering)
     real_list = []
     for X in test_loader:
         real_list.append(X)
@@ -124,18 +142,18 @@ def main(args):
     R_inv = scaler.inverse_transform(real_test.reshape(-1, real_test.shape[-1])).reshape(real_test.shape)
     S_inv = scaler.inverse_transform(synth_test.reshape(-1, synth_test.shape[-1])).reshape(synth_test.shape)
 
-    # --- KL over the whole test set (flattened) ---
+    # KL over the whole test set (flattened)
     r_mid = R_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
     r_spr = R_inv[..., feat_idx["spread_ticks"]].numpy().ravel()
     s_mid = S_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
     s_spr = S_inv[..., feat_idx["spread_ticks"]].numpy().ravel()
     kl_mid = kl_divergence(r_mid, s_mid)
-    kl_spread = kl_divergence(r_spr, s_spr)
+    kl_spread = kl_discrete_ticks(r_spr, s_spr, min_tick=1, max_tick=10)
 
-    # --- Heatmaps: pick exactly n_heatmaps global window indices ---
+    # Heatmaps: pick exactly n_heatmaps global window indices
     num_w = R_inv.shape[0]
     n = min(args.n_heatmaps, num_w)
-    # evenly spaced (or switch to np.random.default_rng(seed).choice for random)
+    # evenly spaced
     idxs = np.linspace(0, num_w - 1, num=n, dtype=int)
 
     os.makedirs(args.out_dir, exist_ok=True)

@@ -526,7 +526,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--iters_pre_embed", type=int, default=1000)
     p.add_argument("--iters_pre_sup", type=int, default=1000)
-    p.add_argument("--iters_joint", type=int, default=50000)
+    p.add_argument("--iters_joint", type=int, default=2000)
     p.add_argument("--gamma", type=float, default=1.0)
     p.add_argument("--sup_w", type=float, default=25.0)
     p.add_argument("--mom_w", type=float, default=30.0)

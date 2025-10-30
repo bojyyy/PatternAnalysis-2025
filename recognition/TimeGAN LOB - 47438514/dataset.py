@@ -92,7 +92,7 @@ def preprocess(msgs: pd.DataFrame, ob: pd.DataFrame, depth_levels: int = 0) -> T
         "log_dt": k + 4,
     })
 
-    # optional: append depth sizes (log1p) for K levels, used for heatmaps/SSIM
+    # append depth sizes (log1p) for K levels, used for heatmaps/SSIM
     K = int(depth_levels)
     if K > 0:
         cols = depth_size_keys(K)                    # [BidSize1..K, AskSize1..K]
