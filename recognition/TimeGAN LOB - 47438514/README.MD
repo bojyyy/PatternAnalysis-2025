@@ -66,7 +66,7 @@ From the full time series T rows, sliding windows of length `seq_len` with strid
 For visualisation and SSIM, `extract_depth_matrix(window, feat_idx, K)` was exposed to build a a matrix using `[BidSize1..K, AskSize1..K] from any window. This ensures real vs synthetic heatmaps are constructed with the same column ordering.
 
 ## Configuration
-The below JSON output includes parameter count, GPU type, VRAM, epochs, and total training time, as required. This JSON output is produced anytime `train.py` is run to completion.
+The below JSON output includes parameter count, GPU type, VRAM, epochs (referred to as iterations here), and total training time, as required. This JSON output is produced anytime `train.py` is run to completion.
 ```json
 {
   "config": {
