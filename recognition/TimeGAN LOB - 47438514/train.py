@@ -117,16 +117,13 @@ def kl_divergence(p_samples, q_samples, nbins=40, eps=1e-12, smooth=True):
     if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
         return 0.0
 
-    # histogram COUNTS (not density) on a common support
+    # histogram counts on a common support
     p_hist, edges = np.histogram(p, bins=nbins, range=(lo, hi), density=False)
     q_hist, _     = np.histogram(q, bins=nbins, range=(lo, hi), density=False)
 
     if smooth and nbins >= 3:
         # All-positive kernels
-        # Option A: simple moving average
         k = np.array([1.0, 1.0, 1.0], dtype=np.float64) / 3.0
-        # Option B (a bit sharper): triangular [1,2,1]/4
-        # k = np.array([1.0, 2.0, 1.0], dtype=np.float64) / 4.0
 
         p_hist = np.convolve(p_hist.astype(np.float64), k, mode="same")
         q_hist = np.convolve(q_hist.astype(np.float64), k, mode="same")
@@ -150,11 +147,11 @@ def kl_divergence(p_samples, q_samples, nbins=40, eps=1e-12, smooth=True):
 
 
 def inverse_scale_continuous(x: torch.Tensor, scaler, feat_idx: dict, cont_keys):
-    """Inverse only the *fitted* continuous dims (scaler.idx) back to original units."""
+    """Inverse only the fitted continuous dims (scaler.idx) back to original units."""
     if not hasattr(scaler, "inverse_transform"):
         return x
     x2d = x.reshape(-1, x.shape[-1]).clone()
-    x2d = scaler.inverse_transform(x2d)  # scaler will only touch scaler.idx
+    x2d = scaler.inverse_transform(x2d)  
     return x2d.view_as(x)
 
 
@@ -394,7 +391,7 @@ def train(args):
 
             # Feature-space Patch D
             with torch.no_grad():
-                X_hat = R(H_hat)    # synth features to feed Patch D (cheap and already computed above)
+                X_hat = R(H_hat)    # synth features to feed Patch D 
             y_real_f = D_patch(X)                 # logits on real feature space
             y_fake_f = D_patch(X_hat.detach())    # logits on synth feature space
             d_feat = loss_fn.bce(y_real_f, torch.ones_like(y_real_f)) + \
@@ -526,7 +523,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--iters_pre_embed", type=int, default=1000)
     p.add_argument("--iters_pre_sup", type=int, default=1000)
-    p.add_argument("--iters_joint", type=int, default=2000)
+    p.add_argument("--iters_joint", type=int, default=50000)
     p.add_argument("--gamma", type=float, default=1.0)
     p.add_argument("--sup_w", type=float, default=25.0)
     p.add_argument("--mom_w", type=float, default=30.0)

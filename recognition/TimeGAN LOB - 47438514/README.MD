@@ -24,6 +24,15 @@ As for the motivation behind TimeGAN, vanilla GANs learn independent and identic
 ## Limit Order Book events
 This project tackles the problem of generating realistic synthetic limit order book (LOB) sequences for research and model development when access to raw market data is limited or restricted. The goal is to produce time-series windows that faithfully capture price microstructure—including non-Gaussian, heavy-tailed mid-price returns, discrete tick-based spreads, and cross-level depth dynamics—while preserving temporal dependencies (autocorrelation, regime shifts) and cross-feature structure. By training a TimeGAN on engineered LOB features and validating with distributional metrics (KL divergence for mid-return and spread) and texture metrics (SSIM on depth heatmaps), we aim to create synthetic LOBs suitable for backtesting, stress testing, privacy-preserving data sharing, and downstream model training/augmentation, without leaking sensitive or proprietary order flow.
 
+## The reference implementation
+This project aimed to re-implement the [original TensorFlow implementation](https://github.com/jsyoon0823/TimeGAN/tree/master) associated with the [paper](https://papers.nips.cc/paper_files/paper/2019/hash/c9efe5f26cd17ba6216bbe2a7d26d490-Abstract.html), but in PyTorch and with additional data-preprocessing considerations for the LOB event domain. The implementation found at the linked repo was outdated, given it was implemented in 2019, with TensorFlow 1.X. Consequently, the repo had a very "monolithic" structure with all of the architectural and training concerns placed into `timegan.py`. Furthermore, all features were min-max scaled indiscriminantly, which is problematic if features are for example one-hot encoded. This was fine for the three example datasets provided, but wouldn't be for the LOBSTER dataset. In accordance with the spec and also for better coding practice, the project was constructed with the following file structure:
+```
+* predict.py
+* train.py
+* modules.py
+* dataset.py
+```
+
 # Training
 
 ## Preprocessing
@@ -57,7 +66,7 @@ From the full time series T rows, sliding windows of length `seq_len` with strid
 For visualisation and SSIM, `extract_depth_matrix(window, feat_idx, K)` was exposed to build a a matrix using `[BidSize1..K, AskSize1..K] from any window. This ensures real vs synthetic heatmaps are constructed with the same column ordering.
 
 ## Configuration
-The below JSON output includes parameter count, GPU type, VRAM, epochs, and total training time, as required.
+The below JSON output includes parameter count, GPU type, VRAM, epochs, and total training time, as required. This JSON output is produced anytime `train.py` is run to completion.
 ```json
 {
   "config": {
@@ -148,6 +157,7 @@ TimeGAN is trained in three phases. First, an autoencoding warm-up trains the Em
 # Results
 
 ## Outputs
+The following outputs were produced with `predict.py`. 
 ```json
 {
   "KL_mid_return": 1.0776222116117733,
@@ -168,8 +178,30 @@ TimeGAN is trained in three phases. First, an autoencoding warm-up trains the Em
 ![training](training_curves.PNG)
 
 ## Error analysis
-Clearly, the desired results were not obtained both in terms of SSIM between real vs synthetic depth heatmaps, and KL divergence for midprice and spread. Due to time contraints and the length of time required to train the 
+Clearly, the desired results were not obtained both in terms of SSIM between real vs synthetic depth heatmaps, and KL divergence for midprice and spread. Due to time contraints and the length of time required to train the model, this was not rectified.
 
+### Where the synthetic LOBs succeeded
+* Less "wavy Gaussian" drift in depth maps. Introducing a feature-space Patch discriminator (local Conv2D over time x feature) reduced overly smooth, blob-like textures. The synthetic heatpmaps became blockier than earlier baselines, which better resembled true LOB event textures.
+* Focused feature moments: adding explicity moment matching on mid-return and spread prevented extreme scale mismatch and stabilised early training phases
+
+### Where the synthetic LOBs failed
+* Discrete spread PMF: Even with discrete KL evaluation, spread PMF is poorly matched (KL=5.77). This could reflect under-weighting small ticks or perhaps spurious mass in unlikely ticks.
+* Mid-return tails and volatility. KL for mid-return remains far from the target of 0.1, indicating poor matching of heavy-tailed, Non-Gaussian behaviour.
+* Mean SSIM of 0.24 shows the model still lacks per-level persistence. The Patch discriminator helped here a bit, but it wasn't sufficient to enforce realistic lag-1 autocorrelation
+* There was also observed late-phase collapse/drift. During joint training, I observed KL initially improving but then worsening with additional iterations, which became particularly bad if joint training was allowed to train for a full 50000 iterations like in the reference implementation. This could be a sign of adversarial imbalance, or perhaps the generator overfitting to the discriminator's current weaknesses and drifting off the desired statistics.
+
+### What was attempted
+* I tried the standard hyperparamter sweeps but none of these resolved the core failures. The changes mainly shifted speed of convergence or caused short-lived improvements that later regressed during joint training. For example:
+  * Supervisor weight: 10, 25, 50 100. Higher supervisor weight improved short-term smoothness in latent space but didn't translate to better mid-return tails or spread PMF.
+  * Discriminator gate: thresholds 0.2-0.5. Looser gate resulted in faster adversarial progress plus earlier drift. Tighter gate slowed but didn't prevent regression.
+  etc.
+Ultimately, the lack of success of hyperparameter tuning points more towards objective or inductive bias gaps.
+
+* Feature-moment emphasis for mid and spread. I added a focused moment penalty on mid_delta_ticks and spread_ticks. This stabilised scales/variance but didn't fix discreteness or tails, meaning the KL targets did not improve substantially.
+* After research, two additional terms were added to the objective function to attempt "temporal persistence shaping". Temporal total-variation on depth sizes were introduced to favour piecewise-constant level trajectories. Lag-1 autocorrelation matching per level was also added to teach short-term stickiness. These together gave the synthetic heatmap a "blockier" appearance that was desired, but fell short of producing strong vertical bands which would have helped reach the target SSIM of 0.6.
+
+### Limitations and scope
+Given the time constraints and the complexity of the problem, I stopped once it became clear that further progress would require strutural changes, not just more hyperparam sweeps. 
 
 # Usage
 This is an example usage with all of the args given values. However, only messages and orderbook are necessary arg, the rest are optional. If excluded, the default values will be used. Simply provide the relative filepath to whereever these files are stored locally. The CSVs can be installed from [here](https://lobsterdata.com/info/DataSamples.php), ensure to install level 10 data.

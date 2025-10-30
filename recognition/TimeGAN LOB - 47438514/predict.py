@@ -150,7 +150,6 @@ def main(args):
     kl_mid = kl_divergence(r_mid, s_mid)
     kl_spread = kl_discrete_ticks(r_spr, s_spr, min_tick=1, max_tick=10)
 
-    # Heatmaps: pick exactly n_heatmaps global window indices
     num_w = R_inv.shape[0]
     n = min(args.n_heatmaps, num_w)
     # evenly spaced
