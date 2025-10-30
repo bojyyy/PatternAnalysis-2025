@@ -171,11 +171,11 @@ The following outputs were produced with `predict.py`.
   "notes": "KL on inverse-scaled engineered features; heatmaps use log1p depth sizes normalized to [0,1]."
 }
 ```
-![heatmap0](images/heatmap_0.PNG)
-![heatmap1](images/heatmap_1.PNG)
-![heatmap2](images/heatmap_2.PNG)
-![heatmap3](images/heatmap_3.PNG)
-![training](images/training_curves.PNG)
+![heatmap0](images/heatmap_0.png)
+![heatmap1](images/heatmap_1.png)
+![heatmap2](images/heatmap_2.png)
+![heatmap3](images/heatmap_3.png)
+![training](images/training_curves.png)
 
 ## Error analysis
 Clearly, the desired results were not obtained both in terms of SSIM between real vs synthetic depth heatmaps, and KL divergence for midprice and spread. Due to time contraints and the length of time required to train the model, this was not rectified.
