@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from dataset import build_loaders, CONT_KEYS
-from modules import TimeGAN, TimeGANConfig
+from modules import TimeGAN, TimeGANConfig, PatchDisc
 
 import os, time, json, sys, platform
 from collections import defaultdict
@@ -150,11 +150,12 @@ def kl_divergence(p_samples, q_samples, nbins=40, eps=1e-12, smooth=True):
 
 
 def inverse_scale_continuous(x: torch.Tensor, scaler, feat_idx: dict, cont_keys):
-    """Inverse only the continuous dims back to original (engineered) units."""
+    """Inverse only the *fitted* continuous dims (scaler.idx) back to original units."""
+    if not hasattr(scaler, "inverse_transform"):
+        return x
     x2d = x.reshape(-1, x.shape[-1]).clone()
-    if hasattr(scaler, "inverse_transform"):
-        x2d = scaler.inverse_transform(x2d)
-    return x2d.reshape(x.shape)
+    x2d = scaler.inverse_transform(x2d)  # scaler will only touch scaler.idx
+    return x2d.view_as(x)
 
 
 def extract_cols(x: torch.Tensor, feat_idx: dict, keys):
@@ -194,6 +195,7 @@ def train(args):
     G = model.generator
     S = model.supervisor
     D = model.discriminator
+    D_patch = PatchDisc(c_in=input_dim).to(device)   # feature-space PatchGAN
 
     loss_fn = TimeGANLoss(gamma=args.gamma, sup_w=args.sup_w, mom_w=args.mom_w)
 
@@ -208,6 +210,7 @@ def train(args):
     opt_G = optim.Adam(g_params, lr=args.lr)
     opt_GS = optim.Adam(g_params, lr=args.lr)
     opt_D = optim.Adam(d_params, lr=args.lr * 0.5)
+    opt_Dp = optim.Adam(D_patch.parameters(), lr=args.lr * 0.5)
 
     # run log scaffold
     run = {}
@@ -226,6 +229,7 @@ def train(args):
         "generator": count_params(G),
         "supervisor": count_params(S),
         "discriminator": count_params(D),
+        "patch_discriminator": count_params(D_patch)
     }
     total_trainable = sum(v["trainable"] for v in module_params.values())
     total = sum(v["total"] for v in module_params.values())
@@ -240,7 +244,8 @@ def train(args):
     arch_txt = []
     arch_txt += ["=== Embedder ===", str(E), "", "=== Recovery ===", str(R), "",
                 "=== Generator ===", str(G), "", "=== Supervisor ===", str(S), "",
-                "=== Discriminator ===", str(D), ""]
+                "=== Discriminator ===", str(D), "",
+                "=== Patch Discriminator ===", str(D_patch), ""]
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(os.path.splitext(args.out)[0] + "_architecture.txt", "w") as f:
         f.write("\n".join(arch_txt))
@@ -316,6 +321,10 @@ def train(args):
                 H_hat = S(E_hat)
                 X_hat = R(H_hat)
 
+                # Feature-space adversarial signal (patch D sees local texture)
+                y_fake_feat = D_patch(X_hat)                    # logits
+                g_adv_feat = loss_fn.bce(y_fake_feat, torch.ones_like(y_fake_feat))
+
                 mid_idx = feat_idx["mid_delta_ticks"]; spr_idx = feat_idx["spread_ticks"]
                 X_mid, Xh_mid  = X[..., mid_idx],  X_hat[..., mid_idx]
                 X_spr, Xh_spr  = X[..., spr_idx],  X_hat[..., spr_idx]
@@ -337,9 +346,33 @@ def train(args):
                 y_fake_g = D(H_hat)     # grads to G/S
                 y_fake_e_g = D(E_hat)   # grads to G
                 g_adv = loss_fn.g_adv_loss(y_fake_g, y_fake_e_g)
-                g_sup = loss_fn.g_sup_loss(H, S(H))
+                with torch.no_grad():
+                    H_det = E(X)
+                g_sup = loss_fn.g_sup_loss(H_det, S(H_det))
                 g_mom = loss_fn.g_moment_loss(X, X_hat)
-                g_total = g_adv + args.sup_w * g_sup.sqrt() + args.mom_w * g_mom + 25.0 * fm_focus
+                g_total = g_adv + g_adv_feat + args.sup_w * g_sup.sqrt() + args.mom_w * g_mom + 25.0 * fm_focus
+
+                K = args.depth_levels
+                size_idxs = [feat_idx[f"BidSize{i}"] for i in range(1, K+1)] + \
+                            [feat_idx[f"AskSize{i}"] for i in range(1, K+1)]
+
+                Xh_sizes = X_hat[..., size_idxs]
+                tv_time = (Xh_sizes[:, 1:, :] - Xh_sizes[:, :-1, :]).abs().mean()
+                g_total += 0.1 * tv_time
+
+                def lag1_autocorr(x, eps=1e-6):
+                      # x: (B,T,C)
+                    xm = x - x.mean((0,1), keepdim=True)
+                    x0, x1 = xm[:, :-1, :], xm[:, 1:, :]
+                    num = (x0 * x1).mean((0,1))
+                    den = (x0.pow(2).mean((0,1)).sqrt() * x1.pow(2).mean((0,1)).sqrt()) + eps
+                    return num / den
+
+                X_sizes   = X[..., size_idxs]
+                ac_real   = lag1_autocorr(X_sizes)
+                ac_synth  = lag1_autocorr(Xh_sizes)
+                ac_loss   = (ac_real - ac_synth).abs().mean()
+                g_total  += 0.5 * ac_loss    
 
                 # embedder auxiliary (detach supervised term to avoid graph clash)
                 e_rec = loss_fn.e_rec_loss(X, X_tilde)
@@ -358,8 +391,19 @@ def train(args):
                 H = E(X); E_hat = G(Z); H_hat = S(E_hat)
             y_real = D(H); y_fake = D(H_hat); y_fake_e = D(E_hat)
             d_total = loss_fn.d_loss(y_real, y_fake, y_fake_e)
-            if d_total.item() > 0.3:
-                opt_D.zero_grad(); d_total.backward(); opt_D.step()
+
+            # Feature-space Patch D
+            with torch.no_grad():
+                X_hat = R(H_hat)    # synth features to feed Patch D (cheap and already computed above)
+            y_real_f = D_patch(X)                 # logits on real feature space
+            y_fake_f = D_patch(X_hat.detach())    # logits on synth feature space
+            d_feat = loss_fn.bce(y_real_f, torch.ones_like(y_real_f)) + \
+                    loss_fn.bce(y_fake_f, torch.zeros_like(y_fake_f))
+
+
+            if (d_total.item() > 0.3) or (d_feat.item() > 0.3):
+                opt_D.zero_grad(); d_total.backward(retain_graph=True); opt_D.step()
+                opt_Dp.zero_grad(); d_feat.backward(); opt_Dp.step()
 
         if (it + 1) % args.log_every == 0:
             rec_rmse = e_rec.sqrt().item(); gs_rmse = g_sup.sqrt().item()
@@ -482,10 +526,10 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--iters_pre_embed", type=int, default=1000)
     p.add_argument("--iters_pre_sup", type=int, default=1000)
-    p.add_argument("--iters_joint", type=int, default=5000)
+    p.add_argument("--iters_joint", type=int, default=50000)
     p.add_argument("--gamma", type=float, default=1.0)
     p.add_argument("--sup_w", type=float, default=25.0)
-    p.add_argument("--mom_w", type=float, default=100.0)
+    p.add_argument("--mom_w", type=float, default=30.0)
     p.add_argument("--log_every", type=int, default=1)
     p.add_argument("--val_every", type=int, default=200, help="validate every N logged steps")
     p.add_argument("--depth_levels", type=int, default=10, help="append [BidSize1..K, AskSize1..K] as features")

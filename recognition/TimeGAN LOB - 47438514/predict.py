@@ -113,55 +113,51 @@ def main(args):
         print("[warn] feat_idx from synth file differs from dataset; using synth mapping for indexing.")
         feat_idx = feat_idx_synth
 
-    # evaluation accumulators
-    real_mid, real_spread, synth_mid, synth_spread = [], [], [], []
-    heatmap_pairs: list[tuple[np.ndarray, np.ndarray]] = []
+    # --- Build aligned real & synth test tensors (same ordering) ---
+    real_list = []
+    for X in test_loader:
+        real_list.append(X)
+    real_test = torch.cat(real_list, dim=0)                         # (Nw, T, F)
+    synth_test = Xhat_test[: real_test.shape[0]]                     # (Nw, T, F)
 
-    # Choose global window indices for heatmaps
-    heat_idxs = set(np.linspace(0, len(Xhat_test) - 1, num=max(1, args.n_heatmaps), dtype=int).tolist())
+    # Inverse-scale (scaler should only touch continuous cols; spread excluded)
+    R_inv = scaler.inverse_transform(real_test.reshape(-1, real_test.shape[-1])).reshape(real_test.shape)
+    S_inv = scaler.inverse_transform(synth_test.reshape(-1, synth_test.shape[-1])).reshape(synth_test.shape)
 
-    # Iterate test split and align synthetic windows by pointer
-    synth_ptr = 0
-    for i, X in enumerate(test_loader):
-        # inverse-scale real
-        X_inv = scaler.inverse_transform(X.reshape(-1, X.shape[-1])).reshape(X.shape)
+    # --- KL over the whole test set (flattened) ---
+    r_mid = R_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
+    r_spr = R_inv[..., feat_idx["spread_ticks"]].numpy().ravel()
+    s_mid = S_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
+    s_spr = S_inv[..., feat_idx["spread_ticks"]].numpy().ravel()
+    kl_mid = kl_divergence(r_mid, s_mid)
+    kl_spread = kl_divergence(r_spr, s_spr)
 
-        # match synthetic slice for this batch
-        B = X.shape[0]
-        synth_chunk = Xhat_test[synth_ptr:synth_ptr + B]
-        synth_ptr += B
-        Xhat_inv = scaler.inverse_transform(synth_chunk.reshape(-1, synth_chunk.shape[-1])).reshape(synth_chunk.shape)
+    # --- Heatmaps: pick exactly n_heatmaps global window indices ---
+    num_w = R_inv.shape[0]
+    n = min(args.n_heatmaps, num_w)
+    # evenly spaced (or switch to np.random.default_rng(seed).choice for random)
+    idxs = np.linspace(0, num_w - 1, num=n, dtype=int)
 
-        # KL features (flatten)
-        r_mid = X_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
-        r_spr = X_inv[..., feat_idx["spread_ticks"]].numpy().ravel()
-        s_mid = Xhat_inv[..., feat_idx["mid_delta_ticks"]].numpy().ravel()
-        s_spr = Xhat_inv[..., feat_idx["spread_ticks"]].numpy().ravel()
-        real_mid.append(r_mid); real_spread.append(r_spr)
-        synth_mid.append(s_mid); synth_spread.append(s_spr)
-
-        # heatmaps (first element of selected global windows)
-        base_idx = synth_ptr - B
-        if args.depth_levels > 0 and base_idx in heat_idxs:
-            Rimg = extract_depth_matrix(X_inv[0], feat_idx, K=args.depth_levels).numpy()
-            Simg = extract_depth_matrix(Xhat_inv[0], feat_idx, K=args.depth_levels).numpy()
-            heatmap_pairs.append((minmax01(Rimg), minmax01(Simg)))
-
-    # Concatenate and compute KL
-    real_mid = np.concatenate(real_mid); real_spread = np.concatenate(real_spread)
-    synth_mid = np.concatenate(synth_mid); synth_spread = np.concatenate(synth_spread)
-    kl_mid = kl_divergence(real_mid, synth_mid)
-    kl_spread = kl_divergence(real_spread, synth_spread)
-
-    # Heatmap SSIMs + figures
     os.makedirs(args.out_dir, exist_ok=True)
     ssim_scores = []
-    for j, (Rimg, Simg) in enumerate(heatmap_pairs[: args.n_heatmaps]):
-        score = ssim2d(Rimg, Simg)
-        ssim_scores.append(score)
+    for j, idx in enumerate(idxs):
+        Rimg = extract_depth_matrix(R_inv[idx], feat_idx, K=args.depth_levels).numpy()
+        Simg = extract_depth_matrix(S_inv[idx], feat_idx, K=args.depth_levels).numpy()
+
+        # shared min/max for fair SSIM
+        lo = min(Rimg.min(), Simg.min())
+        hi = max(Rimg.max(), Simg.max())
+        if hi <= lo:
+            hi = lo + 1.0
+        Rn = (Rimg - lo) / (hi - lo)
+        Sn = (Simg - lo) / (hi - lo)
+
+        score = ssim2d(Rn, Sn)
+        ssim_scores.append(float(score))
+
         fig, ax = plt.subplots(1, 2, figsize=(8, 3))
-        ax[0].imshow(Rimg, aspect='auto', origin='lower'); ax[0].set_title('Real depth'); ax[0].set_xlabel('Levels'); ax[0].set_ylabel('Time')
-        ax[1].imshow(Simg, aspect='auto', origin='lower'); ax[1].set_title(f'Synth depth  SSIM={score:.3f}'); ax[1].set_xlabel('Levels')
+        ax[0].imshow(Rn, aspect='auto', origin='lower'); ax[0].set_title('Real depth'); ax[0].set_xlabel('Levels'); ax[0].set_ylabel('Time')
+        ax[1].imshow(Sn, aspect='auto', origin='lower'); ax[1].set_title(f'Synth depth  SSIM={score:.3f}'); ax[1].set_xlabel('Levels')
         for a in ax: a.set_yticks([])
         plt.tight_layout(); fig.savefig(os.path.join(args.out_dir, f'heatmap_{j}.png'), dpi=160); plt.close(fig)
 

@@ -39,7 +39,7 @@ def depth_size_keys(K: int) -> List[str]:
 
 # Preprocessing
 TYPE_CLASSES = [1, 2, 3, 4, 5, 7]  # keep 7 (halt) for completeness
-CONT_KEYS = ["mid_delta_ticks", "spread_ticks", "log_size", "log_dt"]  # base continuous keys
+CONT_KEYS = ["mid_delta_ticks", "log_size", "log_dt"]  # base continuous keys
 TICK_SIZE = 100.0
 CLIP_TICKS = 50
 

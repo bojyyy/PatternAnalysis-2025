@@ -114,6 +114,30 @@ class Discriminator(nn.Module):
         logits = self.out(y).squeeze(-1) # [B, T]
         return logits
 
+    
+class PatchDisc(nn.Module):
+    """
+    Feature-space patch discriminator.
+    Expects x of shape (B, T, C). We treat C as channels and convolve over time.
+    """
+    def __init__(self, c_in: int, k_t: int = 5, ch: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            # input: (B, C, T, 1)
+            nn.Conv2d(c_in, ch, kernel_size=(k_t, 1), padding=(k_t // 2, 0)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ch, ch, kernel_size=(3, 1), padding=(1, 0)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(ch, 1, kernel_size=(1, 1))  # logits map
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, C) -> (B, C, T, 1)
+        x = x.transpose(1, 2).unsqueeze(-1)
+        out = self.net(x)              # (B, 1, T, 1)
+        return out.mean(dim=(2, 3))    # (B, 1) scalar logit per sample
+
+
 
 def build_modules(cfg: TimeGANConfig):
     embedder = Embedder(cfg.x_dim, cfg.h_dim, cfg.rnn_layers, cfg.dropout)
