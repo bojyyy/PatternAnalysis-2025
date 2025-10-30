@@ -17,7 +17,7 @@ As for the motivation behind TimeGAN, vanilla GANs learn independent and identic
 * Supervisor: predicts the next latent step. This is what injects an explicit temporal continuity prior, so generated sequences are not jittery or just static.
 * Discriminator: distinguishes real latent trajectories from generated ones.
 * Specific to our LOB setup *
-* Patch discriminator: enforces local "texture" in the feature space, becomes relevant 
+* Patch discriminator: enforces local "texture" in the feature space, becomes relevant when heatmaps are generated. 
 
 ![TimeGAN](images/timegan_architecture.PNG)
 
@@ -148,10 +148,24 @@ TimeGAN is trained in three phases. First, an autoencoding warm-up trains the Em
 # Results
 
 ## Outputs
-
-
-## Losses
-
+```json
+{
+  "KL_mid_return": 1.0776222116117733,
+  "KL_spread": 5.772012531488025,
+  "SSIM_depth": [
+    0.17244912961512684,
+    0.2201572597698523,
+    0.42605468613051234,
+    0.1579488474748186
+  ],
+  "notes": "KL on inverse-scaled engineered features; heatmaps use log1p depth sizes normalized to [0,1]."
+}
+```
+![heatmap0](eval_figs/heatmap_0.PNG)
+![heatmap1](eval_figs/heatmap_1.PNG)
+![heatmap2](eval_figs/heatmap_2.PNG)
+![heatmap3](eval_figs/heatmap_3.PNG)
+![training](training_curves.PNG)
 
 ## Error analysis
 Clearly, the desired results were not obtained both in terms of SSIM between real vs synthetic depth heatmaps, and KL divergence for midprice and spread. Due to time contraints and the length of time required to train the 
@@ -182,7 +196,7 @@ python predict.py \
 ## Dependencies
 To install the required dependencies with the correct versions, run the following
 ```bash
-pip install -r requirements.txt`
+pip install -r requirements.txt
 ```
 
 # References
