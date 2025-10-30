@@ -20,7 +20,40 @@ As for the motivation behind TimeGAN, vanilla GANs learn independent and identic
 * Patch discriminator: enforces local "texture" in the feature space, becomes relevant 
 
 
-## Parameter count
+
+# Training
+
+## Preprocessing
+
+### Inputs
+We used paired LOBSTER csvs for a single day of trading of the AMZN stock, with level 10 data.The two csvs were:
+* Messages: Time, Type, Order ID, Size, Price, Direction
+* Orderbook: AskPrice1, Asksize1, BidPrice1, Bidsize1, etc. up to depth D
+
+We load both files, verify row alignment (as specified in the data's README), and construct fixed-width windows for TimeGAN. These files were combined since orderbook data alone doesn't allow TimeGAN to learn what orders are actually driving the orderbook.
+
+### Engineered features
+* Event type one-hot over classes {1,2,3,4,5,6,7}, 7 represents a trading halt but this was kept for completeness.
+* Side (0,1) was derived from direction (-1, +1)
+* Midprice delta (ticks): first difference of mid (ask1 + bid1)/2 divided by the tick size, which is clipped to a default band of +- 50 ticks.
+* Spread (ticks): ask1 - bid1 divided by the tick size
+* Inter-arrival time: derived from the message timestamps
+* Depth sizes (for heatmaps and SSIM calculation), with log1p applied.
+Tick size is configured to 100 LOBSTER price units. 
+
+### Scaling
+A min-max scaler is applied to continuous features only. This includes `mid_delta_ticks`, `log_size`, `log_dt` and depth sizes. The rest of the features are not scaled, including `spread_ticks` which was intentionally kept integer-like. The scaler is fit only on train rows and then used to transform val/test.
+
+### Windowing
+From the full time series T rows, sliding windows of length `seq_len` with stride `step` were created, yielding tensors of shape `[seq_len, num_features]`. Also worth noting:
+* Train/val/test row splits were done as a typical 70/15/15 split, done by row index
+* Windows are produced without materialising all windows in RAM. The dataset computes the start and end slices on the fly.
+* DataLoaders are constructed for each split. The scaler is fit on train only.
+
+### Depth heatmap helper
+For visualisation and SSIM, `extract_depth_matrix(window, feat_idx, K)` was exposed to build a a matrix using `[BidSize1..K, AskSize1..K] from any window. This ensures real vs synthetic heatmaps are constructed with the same column ordering.
+
+## Configuration
 ```json
 {
   "config": {
@@ -104,42 +137,6 @@ As for the motivation behind TimeGAN, vanilla GANs learn independent and identic
   "batches_per_iter": 9
 }
 ```
-# Training
-## Data
-
-
-## Preprocessing
-
-# Inputs
-We used paired LOBSTER csvs for a single day of trading of the AMZN stock, with level 10 data.The two csvs were:
-* Messages: Time, Type, Order ID, Size, Price, Direction
-* Orderbook: AskPrice1, Asksize1, BidPrice1, Bidsize1, etc. up to depth D
-
-We load both files, verify row alignment (as specified in the data's README), and construct fixed-width windows for TimeGAN. These files were combined since orderbook data alone doesn't allow TimeGAN to learn what orders are actually driving the orderbook.
-
-# Engineered features
-* Event type one-hot over classes {1,2,3,4,5,6,7}, 7 represents a trading halt but this was kept for completeness.
-* Side (0,1) was derived from direction (-1, +1)
-* Midprice delta (ticks): first difference of mid (ask1 + bid1)/2 divided by the tick size, which is clipped to a default band of +- 50 ticks.
-* Spread (ticks): ask1 - bid1 divided by the tick size
-* Inter-arrival time: derived from the message timestamps
-* Depth sizes (for heatmaps and SSIM calculation), with log1p applied.
-Tick size is configured to 100 LOBSTER price units. 
-
-# Scaling
-A min-max scaler is applied to continuous features only. This includes `mid_delta_ticks`, `log_size`, `log_dt` and depth sizes. The rest of the features are not scaled, including `spread_ticks` which was intentionally kept integer-like. The scaler is fit only on train rows and then used to transform val/test.
-
-# Windowing
-From the full time series T rows, sliding windows of length `seq_len` with stride `step` were created, yielding tensors of shape `[seq_len, num_features]`. Also worth noting:
-* Train/val/test row splits were done as a typical 70/15/15 split, done by row index
-* Windows are produced without materialising all windows in RAM. The dataset computes the start and end slices on the fly.
-* DataLoaders are constructed for each split. The scaler is fit on train only.
-
-# Depth heatmap helper
-For visualisation and SSIM, `extract_depth_matrix(window, feat_idx, K)` was exposed to build a a matrix using `[BidSize1..K, AskSize1..K] from any window. This ensures real vs synthetic heatmaps are constructed with the same column ordering.
-
-## Configuration
-
 
 ## Training strategy
 
