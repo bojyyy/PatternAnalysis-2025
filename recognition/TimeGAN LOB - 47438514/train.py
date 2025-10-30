@@ -104,20 +104,49 @@ class TimeGANLoss:
         return self.mse(x, x_tilde)
 
 
-# Simple validation metrics (KL on engineered features)
-def kl_divergence(p_samples: np.ndarray, q_samples: np.ndarray, nbins: int = 80, eps: float = 1e-8) -> float:
-    """KL(real || synth) on histograms that share a support window."""
-    lo = float(min(np.min(p_samples), np.min(q_samples)))
-    hi = float(max(np.max(p_samples), np.max(q_samples)))
+def kl_divergence(p_samples, q_samples, nbins=40, eps=1e-12, smooth=True):
+    p = np.asarray(p_samples).ravel()
+    q = np.asarray(q_samples).ravel()
+    p = p[np.isfinite(p)]
+    q = q[np.isfinite(q)]
+    if p.size == 0 or q.size == 0:
+        return 0.0
+
+    lo = float(min(p.min(), q.min()))
+    hi = float(max(p.max(), q.max()))
     if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
         return 0.0
-    p_hist, _ = np.histogram(p_samples, bins=nbins, range=(lo, hi), density=True)
-    q_hist, _ = np.histogram(q_samples, bins=nbins, range=(lo, hi), density=True)
+
+    # histogram COUNTS (not density) on a common support
+    p_hist, edges = np.histogram(p, bins=nbins, range=(lo, hi), density=False)
+    q_hist, _     = np.histogram(q, bins=nbins, range=(lo, hi), density=False)
+
+    if smooth and nbins >= 3:
+        # All-positive kernels
+        # Option A: simple moving average
+        k = np.array([1.0, 1.0, 1.0], dtype=np.float64) / 3.0
+        # Option B (a bit sharper): triangular [1,2,1]/4
+        # k = np.array([1.0, 2.0, 1.0], dtype=np.float64) / 4.0
+
+        p_hist = np.convolve(p_hist.astype(np.float64), k, mode="same")
+        q_hist = np.convolve(q_hist.astype(np.float64), k, mode="same")
+
+    # No negatives allowed after smoothing
+    p_hist = np.clip(p_hist, 0.0, None)
+    q_hist = np.clip(q_hist, 0.0, None)
+
+    # Convert to probabilities and ensure strictly positive
     p = p_hist + eps
     q = q_hist + eps
     p /= p.sum()
     q /= q.sum()
-    return float(np.sum(p * np.log(p / q)))
+
+    # Mask only truly-zero numerical p’s (shouldn’t happen post-eps)
+    mask = p > 0.0
+
+    # Compute KL
+    return float(np.sum(p[mask] * (np.log(p[mask]) - np.log(q[mask]))))
+
 
 
 def inverse_scale_continuous(x: torch.Tensor, scaler, feat_idx: dict, cont_keys):
@@ -178,7 +207,7 @@ def train(args):
     opt_E = optim.Adam(e_params + r_params, lr=args.lr)
     opt_G = optim.Adam(g_params, lr=args.lr)
     opt_GS = optim.Adam(g_params, lr=args.lr)
-    opt_D = optim.Adam(d_params, lr=args.lr)
+    opt_D = optim.Adam(d_params, lr=args.lr * 0.5)
 
     # run log scaffold
     run = {}
@@ -287,6 +316,18 @@ def train(args):
                 H_hat = S(E_hat)
                 X_hat = R(H_hat)
 
+                mid_idx = feat_idx["mid_delta_ticks"]; spr_idx = feat_idx["spread_ticks"]
+                X_mid, Xh_mid  = X[..., mid_idx],  X_hat[..., mid_idx]
+                X_spr, Xh_spr  = X[..., spr_idx],  X_hat[..., spr_idx]
+
+                def mean_std(x, dims=(0,1), eps=1e-6):
+                    m = x.mean(dims); s = x.std(dims, unbiased=False) + eps; return m, s
+
+                m_r, s_r = mean_std(X_mid);  m_f, s_f = mean_std(Xh_mid)
+                m_rs, s_rs = mean_std(X_spr); m_fs, s_fs = mean_std(Xh_spr)
+                fm_focus = (m_r - m_f).abs().mean() + (s_r - s_f).abs().mean() \
+                        + (m_rs - m_fs).abs().mean() + (s_rs - s_fs).abs().mean()
+
                 # discriminator logits
                 y_real = D(H)
                 y_fake = D(H_hat.detach())
@@ -298,7 +339,7 @@ def train(args):
                 g_adv = loss_fn.g_adv_loss(y_fake_g, y_fake_e_g)
                 g_sup = loss_fn.g_sup_loss(H, S(H))
                 g_mom = loss_fn.g_moment_loss(X, X_hat)
-                g_total = g_adv + args.sup_w * g_sup.sqrt() + args.mom_w * g_mom
+                g_total = g_adv + args.sup_w * g_sup.sqrt() + args.mom_w * g_mom + 25.0 * fm_focus
 
                 # embedder auxiliary (detach supervised term to avoid graph clash)
                 e_rec = loss_fn.e_rec_loss(X, X_tilde)
@@ -317,7 +358,7 @@ def train(args):
                 H = E(X); E_hat = G(Z); H_hat = S(E_hat)
             y_real = D(H); y_fake = D(H_hat); y_fake_e = D(E_hat)
             d_total = loss_fn.d_loss(y_real, y_fake, y_fake_e)
-            if d_total.item() > 0.15:
+            if d_total.item() > 0.3:
                 opt_D.zero_grad(); d_total.backward(); opt_D.step()
 
         if (it + 1) % args.log_every == 0:
@@ -328,12 +369,12 @@ def train(args):
 
             # lightweight validation on val split every val_every
             if (it + 1) % args.val_every == 0:
-                kl_mid, kl = run_validation(val_loader, model, scaler, feat_idx, device, z_dim)
+                kl_mid, kl_spread = run_validation(val_loader, model, scaler, feat_idx, device, z_dim)
                 E.train(); R.train(); G.train(); S.train(); D.train()
                 his_kl_mid.append(kl_mid); his_kl_spread.append(kl_spread)
                 print(f"[Joint] it={it+1}/{args.iters_joint} d={his_d[-1]:.3f} g_adv={his_gadv[-1]:.3f} "
                       f"g_sup={gs_rmse:.3f} g_mom={his_gmom[-1]:.3f} rec={rec_rmse:.3f} | "
-                      f"KLmid)={kl_mid:.3f} KL(spread)={kl_spread:.3f}")
+                      f"KL(mid)={kl_mid:.3f} KL(spread)={kl_spread:.3f}")
             else:
                 print(f"[Joint] it={it+1}/{args.iters_joint} d={his_d[-1]:.3f} g_adv={his_gadv[-1]:.3f} "
                       f"g_sup={gs_rmse:.3f} g_mom={his_gmom[-1]:.3f} rec={rec_rmse:.3f}")
@@ -433,17 +474,17 @@ def parse_args():
     p.add_argument("--messages", type=str, required=True)
     p.add_argument("--orderbook", type=str, required=True)
     p.add_argument("--depth", type=int, default=10)
-    p.add_argument("--seq_len", type=int, default=200)
-    p.add_argument("--step", type=int, default=50)
+    p.add_argument("--seq_len", type=int, default=24)
+    p.add_argument("--step", type=int, default=150)
     p.add_argument("--batch_size", type=int, default=128)
-    p.add_argument("--hidden", type=int, default=64)
-    p.add_argument("--layers", type=int, default=2)
+    p.add_argument("--hidden", type=int, default=24)
+    p.add_argument("--layers", type=int, default=3)
     p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--iters_pre_embed", type=int, default=500)
-    p.add_argument("--iters_pre_sup", type=int, default=500)
+    p.add_argument("--iters_pre_embed", type=int, default=1000)
+    p.add_argument("--iters_pre_sup", type=int, default=1000)
     p.add_argument("--iters_joint", type=int, default=5000)
     p.add_argument("--gamma", type=float, default=1.0)
-    p.add_argument("--sup_w", type=float, default=100.0)
+    p.add_argument("--sup_w", type=float, default=25.0)
     p.add_argument("--mom_w", type=float, default=100.0)
     p.add_argument("--log_every", type=int, default=1)
     p.add_argument("--val_every", type=int, default=200, help="validate every N logged steps")

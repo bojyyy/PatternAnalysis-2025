@@ -29,7 +29,7 @@ def msg_names() -> List[str]:
 def ob_names(depth: int) -> List[str]:
     names: List[str] = []
     for L in range(1, depth + 1):
-        names += [f"BidPrice{L}", f"BidSize{L}", f"AskPrice{L}", f"AskSize{L}"]
+        names += [f"AskPrice{L}", f"AskSize{L}", f"BidPrice{L}", f"BidSize{L}"]
     return names
 
 
@@ -40,7 +40,7 @@ def depth_size_keys(K: int) -> List[str]:
 # Preprocessing
 TYPE_CLASSES = [1, 2, 3, 4, 5, 7]  # keep 7 (halt) for completeness
 CONT_KEYS = ["mid_delta_ticks", "spread_ticks", "log_size", "log_dt"]  # base continuous keys
-TICK_SIZE = 1.0
+TICK_SIZE = 100.0
 CLIP_TICKS = 50
 
 
@@ -184,7 +184,7 @@ def build_loaders(messages_csv: str,
                   step: int = 50,
                   batch_size: int = 128,
                   shuffle_train: bool = True,
-                  depth_levels: int = 0) -> Tuple[DataLoader, DataLoader, DataLoader, ContinuousMinMax, Dict[str, int]]:
+                  depth_levels: int = 10) -> Tuple[DataLoader, DataLoader, DataLoader, ContinuousMinMax, Dict[str, int]]:
     # Count rows quickly from messages
     n_rows = len(pd.read_csv(messages_csv, header=None, usecols=[0]))
     train_end, val_end = _row_splits(n_rows)

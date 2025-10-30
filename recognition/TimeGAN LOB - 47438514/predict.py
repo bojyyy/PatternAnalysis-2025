@@ -26,19 +26,49 @@ from dataset import build_loaders, CONT_KEYS, extract_depth_matrix
 from skimage.metrics import structural_similarity as skimage_ssim
 
 
-def kl_divergence(p_samples: np.ndarray, q_samples: np.ndarray, nbins: int = 80, eps: float = 1e-8) -> float:
-    """KL(real || synth) on histograms that share a support window."""
-    lo = float(min(np.min(p_samples), np.min(q_samples)))
-    hi = float(max(np.max(p_samples), np.max(q_samples)))
+def kl_divergence(p_samples, q_samples, nbins=40, eps=1e-12, smooth=True):
+    p = np.asarray(p_samples).ravel()
+    q = np.asarray(q_samples).ravel()
+    p = p[np.isfinite(p)]
+    q = q[np.isfinite(q)]
+    if p.size == 0 or q.size == 0:
+        return 0.0
+
+    lo = float(min(p.min(), q.min()))
+    hi = float(max(p.max(), q.max()))
     if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
         return 0.0
-    p_hist, _ = np.histogram(p_samples, bins=nbins, range=(lo, hi), density=True)
-    q_hist, _ = np.histogram(q_samples, bins=nbins, range=(lo, hi), density=True)
+
+    # histogram COUNTS (not density) on a common support
+    p_hist, edges = np.histogram(p, bins=nbins, range=(lo, hi), density=False)
+    q_hist, _     = np.histogram(q, bins=nbins, range=(lo, hi), density=False)
+
+    if smooth and nbins >= 3:
+        # All-positive kernels
+        # Option A: simple moving average
+        k = np.array([1.0, 1.0, 1.0], dtype=np.float64) / 3.0
+        # Option B (a bit sharper): triangular [1,2,1]/4
+        # k = np.array([1.0, 2.0, 1.0], dtype=np.float64) / 4.0
+
+        p_hist = np.convolve(p_hist.astype(np.float64), k, mode="same")
+        q_hist = np.convolve(q_hist.astype(np.float64), k, mode="same")
+
+    # No negatives allowed after smoothing
+    p_hist = np.clip(p_hist, 0.0, None)
+    q_hist = np.clip(q_hist, 0.0, None)
+
+    # Convert to probabilities and ensure strictly positive
     p = p_hist + eps
     q = q_hist + eps
     p /= p.sum()
     q /= q.sum()
-    return float(np.sum(p * np.log(p / q)))
+
+    # Mask only truly-zero numerical p’s (shouldn’t happen post-eps)
+    mask = p > 0.0
+
+    # Compute KL
+    return float(np.sum(p[mask] * (np.log(p[mask]) - np.log(q[mask]))))
+
 
 
 def ssim2d(imgA: np.ndarray, imgB: np.ndarray) -> float:
@@ -145,7 +175,7 @@ def main(args):
     with open(os.path.join(args.out_dir, 'predict_metrics.json'), 'w') as f:
         json.dump(report, f, indent=2)
 
-    print(f"KL(mid)={kl_mid:.3f}  JS(spread)={kl_spread:.3f}")
+    print(f"KL(mid)={kl_mid:.3f}  KL(spread)={kl_spread:.3f}")
     if ssim_scores:
         print("SSIM depth:", ", ".join(f"{s:.3f}" for s in ssim_scores))
         print(f"Saved {len(ssim_scores)} heatmaps to {args.out_dir}")
@@ -157,8 +187,8 @@ if __name__ == '__main__':
     ap.add_argument('--messages', type=str, required=True)
     ap.add_argument('--orderbook', type=str, required=True)
     ap.add_argument('--depth', type=int, default=10)
-    ap.add_argument('--seq_len', type=int, default=200)
-    ap.add_argument('--step', type=int, default=50)
+    ap.add_argument('--seq_len', type=int, default=24)
+    ap.add_argument('--step', type=int, default=150)
     ap.add_argument('--batch_size', type=int, default=128)
     ap.add_argument('--depth_levels', type=int, default=10, help='use [BidSize1..K, AskSize1..K] for heatmaps & SSIM')
     ap.add_argument('--synth', type=str, default='synth.pt', help='file saved by train.py')
