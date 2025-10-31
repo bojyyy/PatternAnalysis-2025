@@ -16,7 +16,9 @@ As for the motivation behind TimeGAN, vanilla GANs learn independent and identic
 * Generator: maps noise to synthetic latent paths. This is what actually generates the sequences, but it lives in the latent space learned by the embedder.
 * Supervisor: predicts the next latent step. This is what injects an explicit temporal continuity prior, so generated sequences are not jittery or just static.
 * Discriminator: distinguishes real latent trajectories from generated ones.
-* Specific to our LOB setup *
+
+__Specific to our LOB setup__
+
 * Patch discriminator: enforces local "texture" in the feature space, becomes relevant when heatmaps are generated. 
 
 ![TimeGAN](images/timegan_architecture.PNG)
